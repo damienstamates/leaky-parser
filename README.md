@@ -37,7 +37,7 @@ This app requires three environment variables.
 
 ``` shell
 export LEAKY_WORKERS="1000"
-export LEAKY_FILE="<file name"
+export LEAKY_FILE="<file name>"
 export LEAKY_PATH="<path to the file>"
 ```
 
