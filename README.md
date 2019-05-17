@@ -2,7 +2,9 @@
 
 ## Application Objective
 
-This app will read a csv file, encrypts, decrypts, and outputs a csv file. The intent of this app is to demonstrate a potential memory issue as it processes a file using a fan out/fan in method worker channels. The outcome of the execution results in memory usage that has not been released over a period of time after execution.
+This app will read a csv file, encrypts, decrypts, and outputs a csv file. The intent of this app is to demonstrate a potential memory issue as it processes a file using a fan out/fan in method worker channels. The outcome of the execution results in memory usage that is slowly released but only a fraction over a period of time and an inconsistent memory pattern within a containerized image vs local execution.
+
+Included in this repository are two sample csv files that can be used to run the application. To see the memory issue on a larger scale, an even bigger file with more records will be needed. For the sake of keeping this repository small, copying the contents of the one million record csv unto itself can do the job.
 
 ## Application Logic
 
@@ -37,4 +39,10 @@ This app requires three environment variables.
 export LEAKY_WORKERS="1000"
 export LEAKY_FILE="<file name"
 export LEAKY_PATH="<path to the file>"
+```
+
+## Running the app
+
+``` shell
+./leaky-parser
 ```
