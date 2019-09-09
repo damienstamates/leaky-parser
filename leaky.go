@@ -264,7 +264,7 @@ func decryptionWorker(read chan []byte, fo io.Writer, doneRead chan bool, m *syn
 		b.Reset()
 		readPool.Put(b)
 
-		runtime.GC()
+		//runtime.GC()
 		// writer <- row
 	}
 	doneRead <- true
