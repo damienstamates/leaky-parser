@@ -1,6 +1,6 @@
-module github.com/CyberNinja89/leaky-parser
+module github.com/damienstamates/leaky-parser
 
-go 1.12
+go 1.13
 
 require (
 	github.com/ShoshinNikita/go-disk-buffer v0.3.0
