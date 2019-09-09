@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 
+	buffer "github.com/ShoshinNikita/go-disk-buffer"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
 )
@@ -77,12 +78,12 @@ var (
 //
 // A nonce must not be reused with the same secret key to prevent replay attacks.
 // In other words, the secret key and nonce pair must be unique for each distinct message.
-func EncryptNACL(key *string, message []byte) ([]byte, error) {
+func EncryptNACL(key *string, message []byte, b *buffer.Buffer) error {
 	// genNACLNonce generates a new random nonce (number used only once).
 	nonce, err := GenerateNACLNonce()
 	// if err exists, return encrypt error
 	if err != nil {
-		return nil, ErrEncrypt
+		return ErrEncrypt
 	}
 	newKey := new([KeySize]byte)
 	copy(newKey[:], *key)
@@ -92,19 +93,20 @@ func EncryptNACL(key *string, message []byte) ([]byte, error) {
 
 	// Seal appends an encrypted and authenticated copy of message to out, using a
 	// secret encryption key and a nonce.
-	newout := secretbox.Seal(out, message, nonce, newKey)
-	return newout, nil
+	b.Write(secretbox.Seal(out, message, nonce, newKey))
+	// newout := secretbox.Seal(out, message, nonce, newKey)
+	return nil
 }
 
 // DecryptNACL will decrypt NACL encrypted message
 //
 // A nonce must not be reused with the same secret key to prevent replay attacks.
 // In other words, the secret key and nonce pair must be unique for each distinct message.
-func DecryptNACL(key *string, message []byte) ([]byte, error) {
+func DecryptNACL(key *string, message []byte, b *buffer.Buffer) error {
 	// if length of message is less than size of nonce plus the number of bytes
 	// of overhead when boxing a message, return decrypt error.
 	if len(message) < (NonceSize + secretbox.Overhead) {
-		return nil, ErrDecrypt
+		return ErrDecrypt
 	}
 	//log.Printf("in DecryptNACL using KEY [%x]\n", *key)
 	newKey := new([KeySize]byte)
@@ -117,11 +119,15 @@ func DecryptNACL(key *string, message []byte) ([]byte, error) {
 	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, newKey)
 	// if not ok, return decrypt error
 	if !ok {
-		return nil, ErrDecrypt
+		return ErrDecrypt
 	}
 
+	b.Write(out)
+
+	return nil
+
 	//log.Printf("DECRYPTION IS DONE [%s] \n ", newout)
-	return out, nil
+	// return out, nil
 }
 
 // GenerateRandomStatic will generate a random secret encryption key and static hash.
