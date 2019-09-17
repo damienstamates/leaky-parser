@@ -2,8 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
+	"net/http/pprof"
+	_ "net/http/pprof"
 	"os"
 	"runtime"
 	"strconv"
@@ -12,6 +17,9 @@ import (
 	"time"
 
 	buffer "github.com/ShoshinNikita/go-disk-buffer"
+	"github.com/julienschmidt/httprouter"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/crypto/poly1305"
 )
 
 var (
@@ -20,6 +28,7 @@ var (
 	fileWorkers   = ""
 	fileSource    = ""
 	fileEncrypted = fileSource + "E.csv"
+	fileRow       = fileSource + ".row"
 	fileDecrypted = fileSource + "D.csv"
 
 	// Encryption Vars
@@ -32,8 +41,10 @@ var (
 	numberOfWorkers = 100000
 
 	// Buffered Chans
-	numberReadChans    = 10000
-	numberWriteChans   = 10000
+	// numberReadChans    = 10000
+	// numberWriteChans   = 10000
+	numberReadChans    = 10
+	numberWriteChans   = 10
 	syncWriteAfterRows = 100000
 
 	timeFormat = "2006-01-02 15:04:05"
@@ -55,7 +66,47 @@ const (
 	HashLen = 44
 )
 
+func pprofIndex(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	pprof.Index(w, r)
+}
+
+func pprofCmdline(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	pprof.Cmdline(w, r)
+}
+
+func pprofProfile(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	pprof.Profile(w, r)
+}
+
+func pprofSymbol(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	pprof.Symbol(w, r)
+}
+
+func pprofTrace(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	pprof.Trace(w, r)
+}
+
 func main() {
+	r := httprouter.New()
+
+	r.GET("/leaky/debug/pprof/", pprofIndex)
+	r.GET("/leaky/debug/pprof/cmdline", pprofCmdline)
+	r.GET("/leaky/debug/pprof/profile", pprofProfile)
+	r.GET("/leaky/debug/pprof/symbol", pprofSymbol)
+	r.GET("/leaky/debug/pprof/trace", pprofTrace)
+
+	r.Handler("GET", "/leaky/metrics", promhttp.Handler())
+	r.Handler("GET", "/leaky/debug/pprof/allocs", pprof.Handler("allocs"))
+	r.Handler("GET", "/leaky/debug/pprof/block", pprof.Handler("block"))
+	r.Handler("GET", "/leaky/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	r.Handler("GET", "/leaky/debug/pprof/heap", pprof.Handler("heap"))
+	r.Handler("GET", "/leaky/debug/pprof/mutex", pprof.Handler("mutex"))
+	r.Handler("GET", "/leaky/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
+
+	go func() {
+		log.Fatal(http.ListenAndServe(":9900", r))
+	}()
+
 	filePath = os.Getenv("LEAKY_PATH")
 	if filePath == "" {
 		fmt.Printf("env var LEAKY_PATH not found env value [%s] \n", filePath)
@@ -72,10 +123,14 @@ func main() {
 	}
 	fileEncrypted = fileSource + ".E.csv"
 	fileDecrypted = fileSource + ".D.csv"
+	fileRow = fileSource + ".row"
 
+	begin := time.Now()
 	fmt.Println("Check memory before start .......")
 	leakyFunction()
 	fmt.Println("End of process Check memory .......")
+
+	fmt.Printf("Time elapsed [%v]\n", time.Since(begin))
 	time.Sleep(5 * time.Minute)
 
 }
@@ -91,12 +146,39 @@ func leakyFunction() {
 	// orig := buffer.NewBufferWithMaxMemorySize(memAllocMax)
 	// orig.ReadFrom(fileSourcePTR)
 
-	encrypted := buffer.NewBufferWithMaxMemorySize(memAllocMax)
+	// encrypted := buffer.NewBufferWithMaxMemorySize(memAllocMax)
+	encrypted, err := os.OpenFile(filePath+"/"+fileEncrypted, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		fmt.Printf("error reading output file [%s]", err)
+		os.Exit(1)
+	}
 
-	encryptReader(fileSourcePTR, encrypted)
+	rowFile, err := os.OpenFile(filePath+"/"+fileRow, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		fmt.Printf("error reading output file [%s]", err)
+		os.Exit(1)
+	}
+
+	encryptReader(fileSourcePTR, encrypted, rowFile)
+
+	encrypted.Close()
+	rowFile.Close()
 
 	fileSourcePTR.Close()
-	// orig.Reset()
+
+	fileSourcePTR, _ = os.Open(filePath + "/" + fileSource)
+
+	encrypted, err = os.OpenFile(filePath+"/"+fileEncrypted, os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error reading output file [%s]", err)
+		os.Exit(1)
+	}
+
+	rowFile, err = os.OpenFile(filePath+"/"+fileRow, os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error reading output file [%s]", err)
+		os.Exit(1)
+	}
 
 	fileDecryptedPTR, err := os.OpenFile(filePath+"/"+fileDecrypted, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
@@ -104,51 +186,87 @@ func leakyFunction() {
 		os.Exit(1)
 	}
 
+	defer rowFile.Close()
+	defer encrypted.Close()
 	defer fileDecryptedPTR.Close()
 
-	decryptReader(encrypted, fileDecryptedPTR)
+	decryptReader(encrypted, fileDecryptedPTR, rowFile, fileSourcePTR)
 
-	encrypted.Reset()
+	// encrypted.Reset()
 }
 
 var (
 	readPool = sync.Pool{
 		New: func() interface{} {
-			return buffer.NewBufferWithMaxMemorySize(memAllocMax)
+			// return buffer.NewBufferWithMaxMemorySize(memAllocMax)
+			return &bytes.Buffer{}
+		},
+	}
+	writePool = sync.Pool{
+		New: func() interface{} {
+			// return buffer.NewBufferWithMaxMemorySize(memAllocMax)
+			return &bytes.Buffer{}
 		},
 	}
 )
 
-func encryptReader(fi io.Reader, fo io.ReadWriter) {
+func encryptReader(fi io.Reader, fo *os.File, rowFile *os.File) {
 	var (
-		// writerWG sync.WaitGroup
+		writerWG sync.WaitGroup
+		// rowWG    sync.WaitGroup
 		stats runtime.MemStats
 	)
 
 	readCh := make(chan []byte, numberReadChans)
+	// rowCh := make(chan []byte, numberWriteChans)
 	doneReadCh := make(chan bool)
-	writeCh := make(chan []byte, numberWriteChans)
+	writeCh := make(chan rowInfo, numberWriteChans)
+	// writeCh := make(chan WriterToResetter, numberWriteChans)
 
-	fileScanner := bufio.NewScanner(fi)
-	fileScanner.Split(onDelimiter(originalDelimiter))
+	fileScanner := bufio.NewReader(fi)
+	// fileScanner := bufio.NewScanner(fi)
+	// fileScanner.Split(onDelimiter(originalDelimiter))
+
+	writerWG.Add(1)
+	// rowWG.Add(1)
+	// // go writer(writeCh, fo, &writerWG)
+	// go writer(writeCh, fo, &writerWG)
+	go writer(writeCh, fo, rowFile, &writerWG)
 
 	var m sync.Mutex
 	for i := 0; i < numberOfWorkers; i++ {
-		go encryptionWorker(readCh, doneReadCh, fo, &m)
+		go encryptionWorker(readCh, writeCh, doneReadCh, fo, rowFile, &m)
+	}
+
+	var header sync.Once
+	oncebody := func() {
+		tmp, _ := fileScanner.ReadString('\n')
+		row := []byte(tmp)
+
+		len, err := EncryptNACL(&encryptionKey, row, &row)
+		if err != nil {
+			log.Fatalf("error encrypting data: %v", err)
+		}
+		rowLen := strconv.Itoa(len) + "\n"
+
+		writeCh <- rowInfo{data: row, rowLen: rowLen}
 	}
 
 	j := 0
-	for fileScanner.Scan() {
-		readCh <- []byte(fileScanner.Text())
-		j++
-		if (j % syncWriteAfterRows) == 0 {
-			runtime.ReadMemStats(&stats)
-			fmt.Printf("[%v] --> Encrypt Rows read [% 10d] [% 3v Mib]\n", time.Now().Format(timeFormat), j, stats.Alloc/1024/1024)
-			// fo.Sync()
+	for {
+		header.Do(oncebody)
+		row, err := fileScanner.ReadString('\n')
+		if err == io.EOF && len(row) == 0 {
+			break
+		} else if err != nil && len(row) == 0 {
+			log.Fatalf("error reading original file: %v", err)
 		}
+
+		j++
+
+		readCh <- []byte(row)
 	}
 
-	// fo.Sync()
 	runtime.ReadMemStats(&stats)
 	fmt.Printf("[%v] --> Encrypt Rows read [% 10d] [% 3v Mib]\n", time.Now().Format(timeFormat), j, stats.Alloc/1024/1024)
 	close(readCh)
@@ -160,45 +278,89 @@ func encryptReader(fi io.Reader, fo io.ReadWriter) {
 	close(writeCh)
 	close(doneReadCh)
 
+	// rowWG.Wait()
+	writerWG.Wait()
+
+	fo.Sync()
+	rowFile.Sync()
+
 	fmt.Printf("Encrypt Length Write Chan [%d], Read Chan [%d]\n", len(writeCh), len(readCh))
 }
 
-func decryptReader(fi io.Reader, fo io.Writer) {
+type EmptyWriter struct{}
+
+func (*EmptyWriter) Write([]byte) (int, error) { return 0, nil }
+
+func decryptReader(fi io.Reader, fo *os.File, rowFile *os.File, orig *os.File) {
 	var (
 		stats    runtime.MemStats
 		writerWG sync.WaitGroup
 		// breaker  bool
 	)
 
-	readCh := make(chan []byte, numberReadChans)
+	readCh := make(chan rowInfo, numberReadChans)
 	doneReadCh := make(chan bool)
-	writeCh := make(chan []byte, numberWriteChans)
+	writeCh := make(chan rowInfo, numberWriteChans)
 
-	fileScanner := bufio.NewScanner(fi)
-	fileScanner.Split(onDelimiter(encryptedDelimiter))
+	fileScanner := bufio.NewReader(fi)
+	origScanner := bufio.NewReader(orig)
+	origScanner.ReadString('\n')
+	rowScanner := bufio.NewReader(rowFile)
 
 	writerWG.Add(1)
-	// go writer(writeCh, fo, &writerWG)
-	go writer(writeCh, fo, &writerWG)
+	go writer(writeCh, fo, &EmptyWriter{}, &writerWG)
 
 	var m sync.Mutex
 	for i := 0; i < numberOfWorkers; i++ {
-		// go decryptionWorker(readCh, readCh, doneReadCh)
-		go decryptionWorker(readCh, fo, doneReadCh, &m)
+		go decryptionWorker(readCh, writeCh, fo, doneReadCh, &m)
+	}
+
+	var header sync.Once
+	oncebody := func() {
+		tmp, _ := rowScanner.ReadString('\n')
+		rowParsed, _ := strconv.Atoi(tmp[:len(tmp)-1])
+
+		var row = make([]byte, rowParsed)
+		fileScanner.Read(row[:])
+		tmpRow, _ := DecryptNACL(&encryptionKey, row)
+
+		fmt.Printf("Header Length [%d]\n", len(row))
+
+		writeCh <- rowInfo{data: tmpRow, rowLen: ""}
 	}
 
 	j := 0
-	for fileScanner.Scan() {
-		if row := fileScanner.Text(); len(row) != 0 {
-			// newRow := []byte(row[:len(row)-len(encryptedDelimiter)])
-			newRow := []byte(row)
-			readCh <- newRow
-			j++
-			if (j % syncWriteAfterRows) == 0 {
-				runtime.ReadMemStats(&stats)
-				fmt.Printf("[%v] --> Decrypt Rows read [% 10d] [% 3v Mib]\n", time.Now().Format(timeFormat), j, stats.Alloc/1024/1024)
-			}
+	for {
+		header.Do(oncebody)
+
+		rowLen, err := rowScanner.ReadString('\n')
+		if err == io.EOF && len(rowLen) == 0 {
+			break
+		} else if err != nil && len(rowLen) == 0 {
+			log.Fatalf("error reading rowFile: %v", err)
 		}
+		rowParsed, err := strconv.Atoi(rowLen[:len(rowLen)-1])
+		if err != nil {
+			log.Fatalf("error parsing row length: %v", err)
+		}
+
+		var row = make([]byte, rowParsed)
+
+		_, err = fileScanner.Read(row[:])
+		if err == io.EOF && len(rowLen) == 0 {
+			break
+		} else if err != nil && len(rowLen) == 0 {
+			log.Fatalf("error reading encrypted file: %v", err)
+		}
+
+		origRow, err := origScanner.ReadString('\n')
+		if err != nil && err != io.EOF {
+			log.Fatalf("error while reading original file: %v", err)
+		}
+
+		j++
+
+		readCh <- rowInfo{data: row, origRow: []byte(origRow)}
 	}
 
 	runtime.ReadMemStats(&stats)
@@ -210,77 +372,119 @@ func decryptReader(fi io.Reader, fo io.Writer) {
 		<-doneReadCh
 	}
 
-	// close(writeCh)
+	close(writeCh)
 	close(doneReadCh)
 	writerWG.Wait()
+
+	fo.Sync()
+	rowFile.Sync()
 
 	fmt.Printf("Decrypt Length Write Chan [%d], Read Chan [%d]\n", len(writeCh), len(readCh))
 }
 
-// func encryptionWorker(read chan []byte, writerCh chan []byte, out *os.File, doneReadCh chan bool) {
-func encryptionWorker(read chan []byte, doneRead chan bool, fo io.ReadWriter, m *sync.Mutex) {
-	// var row []byte
+type WriterToResetter interface {
+	io.WriterTo
+	Reset()
+}
 
+func encryptionWorker(read chan []byte, writeCh chan rowInfo, doneRead chan bool, out io.Writer, rowFile io.Writer, m *sync.Mutex) {
+	// func encryptionWorker(read chan []byte, writeCh chan WriterToResetter, doneRead chan bool, fo io.ReadWriter, m *sync.Mutex) {
 	for row := range read {
-		b := readPool.Get().(*buffer.Buffer)
-		_ = EncryptNACL(&encryptionKey, row, b)
-		b.WriteString(encryptedDelimiter)
-		// row = append(row, []byte(encryptedDelimiter)...)
-		// w := writePools.New().(*buffer.Buffer)
-		m.Lock()
-		b.WriteTo(fo)
-		m.Unlock()
+		// b := readPool.Get().(*bytes.Buffer)
+		if row[len(row)-1] != '\n' {
+			old := len(row)
+			row = append(row, '\n')
+			log.Printf("OLD[%d] NEW[%d]\n", old, len(row))
+		}
 
-		b.Reset()
-		readPool.Put(b)
+		log.Printf("LASTCHAR[%#v]\n", row[len(row)-1])
+		
+		length, err := EncryptNACL(&encryptionKey, row, &row)
+		if err != nil {
+			log.Fatalf("error encrypting data: %v", err)
+		}
+		rowLen := strconv.Itoa(length) + "\n"
 
-		//runtime.GC()
-		// buf.Put(b)
+		// fmt.Printf("len[%d] data[%s] hex[%x]\n", len(row), row, row)
+		// rowLen := strconv.Itoa(len(row)) + "\n"
+
+		// rowLen := strconv.Itoa(len(tmp)) + "\n"
+		// _ = EncryptNACL(&encryptionKey, row, b)
+
+		// b.WriteString(encryptedDelimiter)
+
+		// writeCh <- rowInfo{data: row, rowLen: strconv.Itoa(len(row)) + "\n"}
+		writeCh <- rowInfo{data: row, rowLen: rowLen}
+
+		// m.Lock()
+		// // out.Write(row)
+		// // rowFile.Write([]byte(rowLen))
+		// out.Write(row)
+		// rowFile.Write([]byte(rowLen))
+		// m.Unlock()
 	}
 	doneRead <- true
 }
 
 // func decryptionWorker(read chan []byte, writerCh chan []byte, out *os.File, doneReadCh chan bool) {
-func decryptionWorker(read chan []byte, fo io.Writer, doneRead chan bool, m *sync.Mutex) {
-	var row []byte
-
-	for row = range read {
-		b := readPool.Get().(*buffer.Buffer)
-		_ = DecryptNACL(&encryptionKey, row, b)
-		b.WriteString(decryptionDelimiter)
-		// row, _ = DecryptNACL(&encryptionKey, row)
-		// row = append(row, []byte(decryptionDelimiter)...)
-		// if len(row) == 1 {
-		// 	fmt.Println("WRONG -", string(row))
-		// }
-		if b.Len() == 1 {
-			fmt.Println("WRONG -", string(row))
+func decryptionWorker(read chan rowInfo, writerCh chan rowInfo, orig io.Reader, doneRead chan bool, m *sync.Mutex) {
+	for row := range read {
+		tmp, err := DecryptNACL(&encryptionKey, row.data)
+		log.Printf("ORIGLEN[%d] ENC_SHOULDBE[%d] ENCLEN[%d] DECLEN[%d] {\n\t\"original\": \"%s\"\n\t\"decrypted\": \"%s\"\n}\n",
+			len(row.origRow), len(row.origRow)+24+poly1305.TagSize, len(row.data), len(tmp), row.origRow, tmp)
+		if err != nil {
+			log.Fatalf("error decrypting data: %v", err)
+		}
+		if tmp[len(tmp)-1] != '\n' {
+			tmp = append(tmp, '\n')
 		}
 
-		m.Lock()
-		b.WriteTo(fo)
-		m.Unlock()
+		// row = append(row, '\n')
+		// b.WriteString(decryptionDelimiter)
+		// if b.Len() == 1 {
+		// 	fmt.Println("WRONG -", string(row))
+		// }
 
-		b.Reset()
-		readPool.Put(b)
+		// m.Lock()
+		// fo.Write(tmp)
+		// m.Unlock()
+		// m.Lock()
+		// b.WriteTo(fo)
+		// m.Unlock()
 
-		runtime.GC()
-		// writer <- row
+		// b.Reset()
+		// readPool.Put(b)
+
+		// runtime.GC()
+		writerCh <- rowInfo{data: tmp, rowLen: ""}
 	}
 	doneRead <- true
 }
 
-func writer(writerCh chan []byte, out io.Writer, writerWG *sync.WaitGroup) {
+type rowInfo struct {
+	data    []byte
+	rowLen  string
+	origRow []byte
+}
+
+// func writer(writerCh chan WriterToResetter, out io.Writer, writerWG *sync.WaitGroup) {
+func writer(writerCh chan rowInfo, fo io.Writer, rowFile io.Writer, writerWG *sync.WaitGroup) {
 	var (
-		row   []byte
+		// row   []byte
 		stats runtime.MemStats
 	)
 
 	// w := bufio.NewWriter(out)
 
 	j := 0
-	for row = range writerCh {
-		out.Write(row)
+	for b := range writerCh {
+		// b.WriteTo(out)
+		// b.Reset()
+		fo.Write(b.data)
+		rowFile.Write([]byte(b.rowLen))
+		// readPool.Put(b)
+
+		// out.Write(row)
 		// w.Write(row)
 		j++
 		// every 1000000 rows empty cache

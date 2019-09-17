@@ -8,9 +8,9 @@ import (
 	"io"
 	"log"
 
-	buffer "github.com/ShoshinNikita/go-disk-buffer"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/poly1305"
 )
 
 // GenerateNACLKey creates a new random secret key.
@@ -74,16 +74,40 @@ var (
 	// Open authenticates and decrypts encrypted messages.
 )
 
+// // EncryptNACL encrypt using NaCL (Networking and Cryptography library)
+// //
+// // A nonce must not be reused with the same secret key to prevent replay attacks.
+// // In other words, the secret key and nonce pair must be unique for each distinct message.
+// func EncryptNACL(key *string, message []byte, b io.Writer) error {
+// 	// genNACLNonce generates a new random nonce (number used only once).
+// 	nonce, err := GenerateNACLNonce()
+// 	// if err exists, return encrypt error
+// 	if err != nil {
+// 		return ErrEncrypt
+// 	}
+// 	newKey := new([KeySize]byte)
+// 	copy(newKey[:], *key)
+
+// 	out := make([]byte, len(nonce))
+// 	copy(out, nonce[:])
+
+// 	// Seal appends an encrypted and authenticated copy of message to out, using a
+// 	// secret encryption key and a nonce.
+// 	b.Write(secretbox.Seal(out, message, nonce, newKey))
+// 	// newout := secretbox.Seal(out, message, nonce, newKey)
+// 	return nil
+// }
+
 // EncryptNACL encrypt using NaCL (Networking and Cryptography library)
 //
 // A nonce must not be reused with the same secret key to prevent replay attacks.
 // In other words, the secret key and nonce pair must be unique for each distinct message.
-func EncryptNACL(key *string, message []byte, b *buffer.Buffer) error {
+func EncryptNACL(key *string, message []byte, dat *[]byte) (int, error) {
 	// genNACLNonce generates a new random nonce (number used only once).
 	nonce, err := GenerateNACLNonce()
 	// if err exists, return encrypt error
 	if err != nil {
-		return ErrEncrypt
+		return 0, ErrEncrypt
 	}
 	newKey := new([KeySize]byte)
 	copy(newKey[:], *key)
@@ -93,22 +117,62 @@ func EncryptNACL(key *string, message []byte, b *buffer.Buffer) error {
 
 	// Seal appends an encrypted and authenticated copy of message to out, using a
 	// secret encryption key and a nonce.
-	b.Write(secretbox.Seal(out, message, nonce, newKey))
+	length := len(message)
+	sliceLen := length + poly1305.TagSize + len(nonce)
+	// var tmp = make([]byte, length+poly1305.TagSize+len(encryptedDelimiter)+24)
+	var tmp = make([]byte, sliceLen)
+	tmp = secretbox.Seal(out, message, nonce, newKey)
+	// sliceLen := len(tmp)
+	// fmt.Printf("ESTIMATED[%d] ENCRYPTED[%d]\n", len(message)+poly1305.TagSize+len(nonce), sliceLen)
+
+	// tmp = append(tmp, []byte{'#', '#', '#', '~', '~', '#', '#', '#'}...)
+	// tmp = append(tmp, '#', '#', '#', '~', '~', '#', '#', '#')
+	*dat = tmp
+	// fmt.Printf("POLY[%v] LEN[%v]\n", length+poly1305.TagSize+24, len(*dat))
+	// fmt.Printf("%s\n", dat)
+
 	// newout := secretbox.Seal(out, message, nonce, newKey)
-	return nil
+	return sliceLen, nil
 }
 
 // DecryptNACL will decrypt NACL encrypted message
 //
 // A nonce must not be reused with the same secret key to prevent replay attacks.
 // In other words, the secret key and nonce pair must be unique for each distinct message.
-func DecryptNACL(key *string, message []byte, b *buffer.Buffer) error {
+// func DecryptNACL(key *string, message []byte, dat *[]byte) error {
+// 	// if length of message is less than size of nonce plus the number of bytes
+// 	// of overhead when boxing a message, return decrypt error.
+// 	if len(message) < (NonceSize + secretbox.Overhead) {
+// 		return ErrDecrypt
+// 	}
+// 	//log.Printf("in DecryptNACL using KEY [%x]\n", *key)
+// 	newKey := new([KeySize]byte)
+// 	copy(newKey[:], *key)
+
+// 	nonce := new([NonceSize]byte)
+// 	copy(nonce[:], message[:NonceSize])
+// 	// Open decrypts and authenticates an encrypted message (or ciphertext) using a
+// 	// secret encryption key and a nonce.
+// 	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, newKey)
+// 	// if not ok, return decrypt error
+// 	if !ok {
+// 		return ErrDecrypt
+// 	}
+
+// 	*dat = out
+
+// 	return nil
+
+// 	//log.Printf("DECRYPTION IS DONE [%s] \n ", newout)
+// 	// return out, nil
+// }
+
+func DecryptNACL(key *string, message []byte) ([]byte, error) {
 	// if length of message is less than size of nonce plus the number of bytes
 	// of overhead when boxing a message, return decrypt error.
 	if len(message) < (NonceSize + secretbox.Overhead) {
-		return ErrDecrypt
+		return nil, ErrDecrypt
 	}
-	//log.Printf("in DecryptNACL using KEY [%x]\n", *key)
 	newKey := new([KeySize]byte)
 	copy(newKey[:], *key)
 
@@ -119,16 +183,39 @@ func DecryptNACL(key *string, message []byte, b *buffer.Buffer) error {
 	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, newKey)
 	// if not ok, return decrypt error
 	if !ok {
-		return ErrDecrypt
+		return nil, ErrDecrypt
 	}
 
-	b.Write(out)
-
-	return nil
-
-	//log.Printf("DECRYPTION IS DONE [%s] \n ", newout)
-	// return out, nil
+	return out, nil
 }
+
+// func DecryptNACL(key *string, message []byte, b io.Writer) error {
+// 	// if length of message is less than size of nonce plus the number of bytes
+// 	// of overhead when boxing a message, return decrypt error.
+// 	if len(message) < (NonceSize + secretbox.Overhead) {
+// 		return ErrDecrypt
+// 	}
+// 	//log.Printf("in DecryptNACL using KEY [%x]\n", *key)
+// 	newKey := new([KeySize]byte)
+// 	copy(newKey[:], *key)
+
+// 	nonce := new([NonceSize]byte)
+// 	copy(nonce[:], message[:NonceSize])
+// 	// Open decrypts and authenticates an encrypted message (or ciphertext) using a
+// 	// secret encryption key and a nonce.
+// 	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, newKey)
+// 	// if not ok, return decrypt error
+// 	if !ok {
+// 		return ErrDecrypt
+// 	}
+
+// 	b.Write(out)
+
+// 	return nil
+
+// 	//log.Printf("DECRYPTION IS DONE [%s] \n ", newout)
+// 	// return out, nil
+// }
 
 // GenerateRandomStatic will generate a random secret encryption key and static hash.
 // The static.static table contains a static_key and static_hash column.
