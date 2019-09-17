@@ -1,3 +1,3 @@
-export LEAKY_WORKERS="1000"
-export LEAKY_FILE="fiftymillion.csv"
+export LEAKY_WORKERS="1"
+export LEAKY_FILE="1000.csv"
 export GOGC=500
