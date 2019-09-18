@@ -102,32 +102,32 @@ var (
 //
 // A nonce must not be reused with the same secret key to prevent replay attacks.
 // In other words, the secret key and nonce pair must be unique for each distinct message.
-func EncryptNACL(key *string, message []byte, dat *[]byte) (int, error) {
+func EncryptNACL(key [32]byte, message []byte, dat *[]byte) (int, error) {
 	// genNACLNonce generates a new random nonce (number used only once).
 	nonce, err := GenerateNACLNonce()
 	// if err exists, return encrypt error
 	if err != nil {
 		return 0, ErrEncrypt
 	}
-	newKey := new([KeySize]byte)
-	copy(newKey[:], *key)
+	// newKey := new([KeySize]byte)
+	// copy(newKey[:], *key)
 
-	out := make([]byte, len(nonce))
-	copy(out, nonce[:])
+	// out := make([]byte, len(nonce))
+	// copy(out, nonce[:])
 
 	// Seal appends an encrypted and authenticated copy of message to out, using a
 	// secret encryption key and a nonce.
-	length := len(message)
-	sliceLen := length + poly1305.TagSize + len(nonce)
+	// length := len(message)
+	sliceLen := len(message) + poly1305.TagSize + 24
 	// var tmp = make([]byte, length+poly1305.TagSize+len(encryptedDelimiter)+24)
-	var tmp = make([]byte, sliceLen)
-	tmp = secretbox.Seal(out, message, nonce, newKey)
+	// var tmp = make([]byte, sliceLen)
+	*dat = secretbox.Seal(nonce[:], message, nonce, &key)
 	// sliceLen := len(tmp)
 	// fmt.Printf("ESTIMATED[%d] ENCRYPTED[%d]\n", len(message)+poly1305.TagSize+len(nonce), sliceLen)
 
 	// tmp = append(tmp, []byte{'#', '#', '#', '~', '~', '#', '#', '#'}...)
 	// tmp = append(tmp, '#', '#', '#', '~', '~', '#', '#', '#')
-	*dat = tmp
+	// *dat = tmp
 	// fmt.Printf("POLY[%v] LEN[%v]\n", length+poly1305.TagSize+24, len(*dat))
 	// fmt.Printf("%s\n", dat)
 
@@ -167,20 +167,20 @@ func EncryptNACL(key *string, message []byte, dat *[]byte) (int, error) {
 // 	// return out, nil
 // }
 
-func DecryptNACL(key *string, message []byte) ([]byte, error) {
+func DecryptNACL(key [32]byte, message []byte) ([]byte, error) {
 	// if length of message is less than size of nonce plus the number of bytes
 	// of overhead when boxing a message, return decrypt error.
 	if len(message) < (NonceSize + secretbox.Overhead) {
 		return nil, ErrDecrypt
 	}
-	newKey := new([KeySize]byte)
-	copy(newKey[:], *key)
+	// newKey := new([KeySize]byte)
+	// copy(newKey[:], *key)
 
 	nonce := new([NonceSize]byte)
 	copy(nonce[:], message[:NonceSize])
 	// Open decrypts and authenticates an encrypted message (or ciphertext) using a
 	// secret encryption key and a nonce.
-	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, newKey)
+	out, ok := secretbox.Open(nil, message[NonceSize:], nonce, &key)
 	// if not ok, return decrypt error
 	if !ok {
 		return nil, ErrDecrypt
